@@ -354,7 +354,14 @@ if run_scan:
                 st.session_state.perf_cache    = {}   # fresh prices on new scan
                 st.success(f"✅ Done in **{duration:.1f}s** — {len(all_texts):,} text items from {total} subreddits.")
             else:
-                st.error("No data retrieved. Reddit may be rate-limiting — wait a moment and retry.")
+                st.error(
+                    "⚠️ **No data retrieved from Reddit.**\n\n"
+                    "If you're running on Streamlit Cloud, Reddit may be blocking the datacenter IP. "
+                    "Possible fixes:\n"
+                    "1. Wait 60 seconds and retry (transient rate-limit)\n"
+                    "2. Try a smaller subreddit list or **Turbo** scan mode\n"
+                    "3. Configure Reddit OAuth credentials in Streamlit secrets (see README)"
+                )
 
 # ── Results tabs ─────────────────────────────────────────────────────────────
 if st.session_state.results:

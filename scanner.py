@@ -9,10 +9,16 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Callable
 
-HEADERS = {"User-Agent": "redditBasedInvestAdvisor/1.0"}
+# Reddit's recommended UA format: <platform>:<app-id>:<version> (by /u/<username>)
+# Generic UAs get globally rate-limited, especially from cloud IPs.
+HEADERS = {
+    "User-Agent": "web:redditBasedInvestAdvisor:v1.1 (by /u/WWWoodBlvd)",
+    "Accept": "application/json",
+}
 
 # Limit concurrent requests to stay within Reddit's rate limit (~60/min)
 SEMAPHORE_LIMIT = 20
+MAX_RETRIES = 3
 
 SCAN_LIMITS = {
     "Turbo  ⚡ (25 posts, titles only  — ~3 sec)":  {"posts": 25,  "comments": 0},
@@ -24,15 +30,20 @@ SCAN_LIMITS = {
 # ── Low-level fetch ──────────────────────────────────────────────────────────
 
 async def _get(session: aiohttp.ClientSession, sem: asyncio.Semaphore, url: str, params: dict) -> Optional[dict]:
+    """Retry on rate-limit / transient errors with exponential backoff."""
     async with sem:
-        try:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=6)) as r:
-                if r.status == 200:
-                    return await r.json(content_type=None)
-                if r.status == 429:
-                    await asyncio.sleep(2)
-        except Exception:
-            pass
+        for attempt in range(MAX_RETRIES):
+            try:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status == 200:
+                        return await r.json(content_type=None)
+                    if r.status in (429, 503):
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    if r.status in (403, 404):
+                        return None   # don't retry
+            except (asyncio.TimeoutError, aiohttp.ClientError):
+                await asyncio.sleep(1 + attempt)
     return None
 
 
