@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from config import SUBREDDITS, CATEGORIES
-from scanner import scan_all, SCAN_LIMITS
+from scanner import scan_all, SCAN_LIMITS, configure_oauth, auth_mode
 from detector import aggregate_mentions, STOCK_MAP, CRYPTO_MAP
 from prices import fetch_performance, PERIODS
 
@@ -19,6 +19,15 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
+
+# Pull OAuth credentials from Streamlit secrets if configured
+try:
+    configure_oauth(
+        st.secrets.get("REDDIT_CLIENT_ID", ""),
+        st.secrets.get("REDDIT_CLIENT_SECRET", ""),
+    )
+except Exception:
+    pass   # secrets not configured — fall back to public JSON
 
 # ── Session state ────────────────────────────────────────────────────────────
 DEFAULTS = {
@@ -292,7 +301,7 @@ with st.sidebar:
 
 # ── Main area ────────────────────────────────────────────────────────────────
 st.title("📈 Reddit Investment Advisor")
-st.caption("Scans Reddit for stock & crypto mentions, sentiment, and engagement. Not financial advice.")
+st.caption(f"Reddit access: **{auth_mode()}** · Not financial advice.")
 
 if run_scan:
     active = [
