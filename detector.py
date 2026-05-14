@@ -258,33 +258,31 @@ def aggregate_mentions(
     min_mentions: int = 1,
 ) -> dict[str, dict]:
     """
-    Aggregates ticker mentions with sentiment and engagement weighting.
+    Aggregates ticker mentions, deduplicating by author so each user counts ONCE
+    per ticker regardless of how many posts/comments they made about it.
 
-    Each item: {subreddit, text, created_utc, [post_id], [score]}
+    Each item: {subreddit, text, created_utc, [post_id], [author], [score]}
 
     Returns per ticker:
-      {
-        count:       int      # raw mention count
-        unique_posts: int     # distinct posts mentioning ticker
-        subreddits:  set[str]
-        samples:     list[str]
-        is_crypto:   bool
-        sentiment:   int      # cumulative bullish-bearish score
-        bullish:     int      # # of bullish mentions
-        bearish:     int      # # of bearish mentions
-        engagement:  int      # sum of upvotes across mentioning posts
-      }
+      count:        # of unique users who mentioned the ticker  ← primary metric
+      unique_posts: # of distinct posts mentioning the ticker
+      raw_mentions: # of raw text items mentioning ticker (for reference)
+      subreddits:   set[str]
+      samples:      up to 5 sample text snippets
+      is_crypto:    bool
+      sentiment:    cumulative bullish-bearish score (across unique authors)
+      bullish:      # of authors whose mentioning text was bullish
+      bearish:      # of authors whose mentioning text was bearish
+      engagement:   sum of upvotes across mentioning posts (deduped by post)
     """
-    counts: dict[str, dict] = defaultdict(lambda: {
-        "count":        0,
-        "unique_posts": set(),
+    # First pass — collect per-ticker per-author signals
+    per_ticker = defaultdict(lambda: {
+        "authors":      {},   # author → strongest sentiment they expressed
+        "posts":        {},   # post_id → score (deduped)
         "subreddits":   set(),
         "samples":      [],
         "is_crypto":    False,
-        "sentiment":    0,
-        "bullish":      0,
-        "bearish":      0,
-        "engagement":   0,
+        "raw_mentions": 0,
     })
 
     for item in text_items:
@@ -292,37 +290,54 @@ def aggregate_mentions(
         if not tickers:
             continue
 
-        sent = _sentiment_score(item["text"])
+        sent    = _sentiment_score(item["text"])
+        author  = item.get("author", "[anonymous]")
         post_id = item.get("post_id") or item.get("text", "")[:50]
         score   = max(0, item.get("score", 0))
 
         for ticker in tickers:
-            c = counts[ticker]
-            c["count"] += 1
-            c["unique_posts"].add(post_id)
-            c["subreddits"].add(item["subreddit"])
-            c["is_crypto"] = ticker in CRYPTO_MAP
-            c["sentiment"] += sent
-            c["engagement"] += score
-            if sent > 0:
-                c["bullish"] += 1
-            elif sent < 0:
-                c["bearish"] += 1
+            d = per_ticker[ticker]
+            d["raw_mentions"] += 1
+            d["subreddits"].add(item["subreddit"])
+            d["is_crypto"] = ticker in CRYPTO_MAP
+            d["posts"][post_id] = max(d["posts"].get(post_id, 0), score)
 
-            if len(c["samples"]) < 5:
+            # Keep the strongest sentiment this author expressed about this ticker
+            prev = d["authors"].get(author)
+            if prev is None or abs(sent) > abs(prev):
+                d["authors"][author] = sent
+
+            if len(d["samples"]) < 5:
                 snippet = item["text"][:240].replace("\n", " ").strip()
-                c["samples"].append({
-                    "text": snippet,
+                d["samples"].append({
+                    "text":      snippet,
                     "subreddit": item["subreddit"],
                     "sentiment": sent,
+                    "author":    author,
                 })
 
-    # Finalize — convert unique_posts to int
+    # Second pass — finalize aggregates
     result = {}
-    for t, v in counts.items():
-        if v["count"] < min_mentions:
+    for ticker, d in per_ticker.items():
+        unique_users = len(d["authors"])
+        if unique_users < min_mentions:
             continue
-        v["unique_posts"] = len(v["unique_posts"])
-        result[t] = v
+
+        sentiment_sum = sum(d["authors"].values())
+        bullish = sum(1 for s in d["authors"].values() if s > 0)
+        bearish = sum(1 for s in d["authors"].values() if s < 0)
+
+        result[ticker] = {
+            "count":        unique_users,
+            "unique_posts": len(d["posts"]),
+            "raw_mentions": d["raw_mentions"],
+            "subreddits":   d["subreddits"],
+            "samples":      d["samples"],
+            "is_crypto":    d["is_crypto"],
+            "sentiment":    sentiment_sum,
+            "bullish":      bullish,
+            "bearish":      bearish,
+            "engagement":   sum(d["posts"].values()),
+        }
 
     return result

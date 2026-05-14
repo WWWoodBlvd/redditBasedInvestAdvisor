@@ -147,16 +147,21 @@ async def _fetch_posts(session, sem, subreddit: str, days: int, max_posts: int) 
 # ── Comment fetching ─────────────────────────────────────────────────────────
 
 async def _fetch_comments(session, sem, subreddit: str, post_id: str) -> list:
+    """Returns list of {body, author} dicts for top-level comments."""
     suffix = "" if _use_oauth() else ".json"
     url = f"{_api_host()}/r/{subreddit}/comments/{post_id}{suffix}"
     data = await _get(session, sem, url, {"raw_json": 1, "limit": 50, "depth": 1})
     if not data or len(data) < 2:
         return []
-    return [
-        c["data"]["body"]
-        for c in data[1]["data"].get("children", [])
-        if c.get("data", {}).get("body", "") not in ("", "[deleted]", "[removed]")
-    ]
+    out = []
+    for c in data[1]["data"].get("children", []):
+        body = c.get("data", {}).get("body", "")
+        if body and body not in ("[deleted]", "[removed]"):
+            out.append({
+                "body":   body,
+                "author": c.get("data", {}).get("author", "[anonymous]"),
+            })
+    return out
 
 
 # ── Per-subreddit scan ───────────────────────────────────────────────────────
@@ -173,6 +178,7 @@ async def _scan_one(session, sem, subreddit, days, max_posts, max_comments) -> l
                 "text":        text,
                 "created_utc": p.get("created_utc", 0),
                 "post_id":     p.get("id", ""),
+                "author":      p.get("author", "[anonymous]"),
                 "score":       p.get("score", 0),
             })
 
@@ -180,13 +186,14 @@ async def _scan_one(session, sem, subreddit, days, max_posts, max_comments) -> l
         top_posts = sorted(posts, key=lambda x: x.get("score", 0), reverse=True)[:max_comments]
         comment_tasks = [_fetch_comments(session, sem, subreddit, p["id"]) for p in top_posts]
         results = await asyncio.gather(*comment_tasks)
-        for p, bodies in zip(top_posts, results):
-            for body in bodies:
+        for p, comments in zip(top_posts, results):
+            for c in comments:
                 items.append({
                     "subreddit":   subreddit,
-                    "text":        body,
+                    "text":        c["body"],
                     "created_utc": p.get("created_utc", 0),
                     "post_id":     p.get("id", ""),
+                    "author":      c["author"],
                     "score":       p.get("score", 0),
                 })
 
