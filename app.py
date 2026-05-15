@@ -33,6 +33,7 @@ except Exception:
 DEFAULTS = {
     "subreddits":     lambda: [s.copy() for s in SUBREDDITS],
     "results":        lambda: None,
+    "all_results":    lambda: None,
     "scan_time":      lambda: None,
     "scan_duration":  lambda: None,
     "cache":          lambda: {},
@@ -246,15 +247,15 @@ with st.sidebar:
     st.title("⚙️ Settings")
 
     st.subheader("Scan Parameters")
-    days = st.slider("Days to look back", 1, 90, 7)
-    min_mentions = st.number_input("Min mentions threshold", 1, 500, 5, step=1)
-    scan_mode = st.selectbox("Scan depth", list(SCAN_LIMITS.keys()), index=0)
+    days = st.selectbox("Days to look back", list(range(1, 101)), index=0)
+    min_mentions = st.number_input("Min mentions threshold", 1, 500, 1, step=1)
+    scan_mode = st.selectbox("Scan depth", list(SCAN_LIMITS.keys()), index=2)   # default = Deep
     top_n = st.number_input("Top N recommendations", 1, 100, 10, step=1)
 
     st.divider()
     st.subheader("Subreddit Filters")
     min_subscribers = st.number_input("Min subscribers", 0, 20_000_000, 0, step=10000, format="%d")
-    selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES)
+    selected_categories = st.multiselect("Categories", CATEGORIES, default=["Stocks"])
 
     st.divider()
     st.subheader("Manage Subreddits")
@@ -293,10 +294,17 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    run_scan = st.button("🚀 Run Scan", type="primary", use_container_width=True)
+    clicked_scan = st.button("🚀 Run Scan", type="primary", use_container_width=True)
     if st.button("🗑 Clear Price Cache", use_container_width=True):
         st.session_state.perf_cache = {}
         st.success("Price cache cleared.")
+
+# Auto-trigger a scan on first visit so user sees results immediately
+auto_first_run = False
+if "initial_scan_done" not in st.session_state:
+    st.session_state.initial_scan_done = True
+    auto_first_run = True
+run_scan = clicked_scan or auto_first_run
 
 
 # ── Main area ────────────────────────────────────────────────────────────────
@@ -321,9 +329,10 @@ if run_scan:
         cached = st.session_state.cache.get(cache_key)
 
         if cached and (time.time() - cached[0]) < CACHE_TTL:
-            st.session_state.results = aggregate_mentions(cached[1], min_mentions=int(min_mentions))
-            st.session_state.scan_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-            st.session_state.perf_cache = {}   # clear stale prices on new scan
+            st.session_state.results     = aggregate_mentions(cached[1], min_mentions=int(min_mentions))
+            st.session_state.all_results = aggregate_mentions(cached[1], min_mentions=1)
+            st.session_state.scan_time   = datetime.now().strftime("%Y-%m-%d %H:%M")
+            st.session_state.perf_cache  = {}
             st.success(f"✨ Results from cache (< 5 min old). {len(cached[1]):,} items.")
         else:
             t_start      = time.time()
@@ -358,9 +367,11 @@ if run_scan:
             if all_texts:
                 st.session_state.cache[cache_key] = (time.time(), all_texts)
                 st.session_state.results       = aggregate_mentions(all_texts, min_mentions=int(min_mentions))
+                # Also store unfiltered (min=1) for diagnostics
+                st.session_state.all_results   = aggregate_mentions(all_texts, min_mentions=1)
                 st.session_state.scan_time     = datetime.now().strftime("%Y-%m-%d %H:%M")
                 st.session_state.scan_duration = duration
-                st.session_state.perf_cache    = {}   # fresh prices on new scan
+                st.session_state.perf_cache    = {}
                 st.success(f"✅ Done in **{duration:.1f}s** — {len(all_texts):,} text items from {total} subreddits.")
             else:
                 st.error(
@@ -390,3 +401,31 @@ if st.session_state.results:
         render_results_tab(results_to_df(st.session_state.results, "Crypto"), "Crypto", int(top_n))
 else:
     st.info("👈 Configure parameters in the sidebar and click **Run Scan**.")
+
+# ── Diagnostic: search for specific ticker ──────────────────────────────────
+if st.session_state.get("all_results"):
+    st.divider()
+    with st.expander("🔎 Search / Debug — was a specific ticker detected?"):
+        st.caption("Shows every ticker the algorithm found in the last scan, including ones below your threshold.")
+        all_r = st.session_state.all_results
+        search = st.text_input("Search ticker (e.g. POET)", "").strip().upper()
+        if search:
+            if search in all_r:
+                d = all_r[search]
+                st.success(
+                    f"✅ **{search}** WAS detected — "
+                    f"**{d['count']}** unique users, **{d['unique_posts']}** posts, "
+                    f"**{d['raw_mentions']}** raw mentions across {len(d['subreddits'])} subreddit(s)"
+                )
+                st.write(f"Subreddits: {', '.join(sorted(d['subreddits']))}")
+                if d["samples"]:
+                    st.markdown("**Sample mentions:**")
+                    for s in d["samples"][:3]:
+                        emoji = "🟢" if s["sentiment"] > 0 else "🔴" if s["sentiment"] < 0 else "⚪"
+                        st.caption(f"{emoji} *r/{s['subreddit']}* — u/{s.get('author','?')}: {s['text']}")
+            else:
+                st.warning(f"❌ **{search}** was NOT mentioned in any post or comment in this scan.")
+
+        st.markdown("**All detected tickers (top 50 by mentions):**")
+        all_list = sorted(all_r.items(), key=lambda kv: kv[1]["count"], reverse=True)[:50]
+        st.code("  ".join(f"{t}({d['count']})" for t, d in all_list))
