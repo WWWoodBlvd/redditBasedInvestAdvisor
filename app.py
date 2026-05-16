@@ -121,12 +121,23 @@ def _color_cell(val):
     return ""
 
 
-def render_results_tab(df: pd.DataFrame, label: str, top_n: int):
+def render_results_tab(df: pd.DataFrame, label: str, top_n: int, watchlist: set = None):
     if df.empty:
         st.info(f"No tickers found for {label} with current filters.")
         return
 
+    watchlist = watchlist or set()
     top_df = df.head(top_n).copy()
+
+    # Always include watchlist tickers, even if outside top N
+    if watchlist:
+        extras_mask = df["Ticker"].isin(watchlist) & ~df["Ticker"].isin(top_df["Ticker"])
+        extras = df[extras_mask].copy()
+        if not extras.empty:
+            top_df = pd.concat([top_df, extras], ignore_index=True)
+
+    # Tag watchlist rows for visual marker (without mangling the Ticker value)
+    top_df["_in_watchlist"] = top_df["Ticker"].isin(watchlist)
 
     # ── Summary metrics ──
     c1, c2, c3, c4 = st.columns(4)
@@ -185,8 +196,10 @@ def render_results_tab(df: pd.DataFrame, label: str, top_n: int):
         p = perf.get(t, {})
         price = p.get("price")
         price_str = f"${price:,.2f}" if price else "—"
+        star = "⭐" if r.get("_in_watchlist", False) else ""
 
         disp = {
+            "":           star,
             "Ticker":     t,
             "Company":    r["Company"],
             "Mentions":   r["Mentions"],
@@ -249,8 +262,15 @@ with st.sidebar:
     st.subheader("Scan Parameters")
     days = st.selectbox("Days to look back", list(range(1, 101)), index=0)
     min_mentions = st.number_input("Min mentions threshold", 1, 500, 1, step=1)
-    scan_mode = st.selectbox("Scan depth", list(SCAN_LIMITS.keys()), index=2)   # default = Deep
+    scan_mode = st.selectbox("Scan depth", list(SCAN_LIMITS.keys()), index=2)
     top_n = st.number_input("Top N recommendations", 1, 100, 10, step=1)
+
+    watchlist_input = st.text_input(
+        "⭐ Watchlist (always shown)",
+        placeholder="POET, PLTR, NVDA",
+        help="Comma-separated tickers always included in results, regardless of ranking.",
+    )
+    watchlist = {t.strip().upper() for t in watchlist_input.split(",") if t.strip()}
 
     st.divider()
     st.subheader("Subreddit Filters")
@@ -391,14 +411,22 @@ if st.session_state.results:
     tab_all, tab_stocks, tab_options, tab_crypto = st.tabs([
         "🌐 All", "📊 Stocks", "⚡ Options", "🪙 Crypto"
     ])
+    # Build a combined results dict: threshold-passing tickers + any watchlist tickers
+    # that were detected below the threshold (so they still appear)
+    combined = dict(st.session_state.results)
+    if watchlist and st.session_state.all_results:
+        for t in watchlist:
+            if t not in combined and t in st.session_state.all_results:
+                combined[t] = st.session_state.all_results[t]
+
     with tab_all:
-        render_results_tab(results_to_df(st.session_state.results), "All", int(top_n))
+        render_results_tab(results_to_df(combined), "All", int(top_n), watchlist)
     with tab_stocks:
-        render_results_tab(results_to_df(st.session_state.results, "Stocks"), "Stocks", int(top_n))
+        render_results_tab(results_to_df(combined, "Stocks"), "Stocks", int(top_n), watchlist)
     with tab_options:
-        render_results_tab(results_to_df(st.session_state.results, "Options"), "Options", int(top_n))
+        render_results_tab(results_to_df(combined, "Options"), "Options", int(top_n), watchlist)
     with tab_crypto:
-        render_results_tab(results_to_df(st.session_state.results, "Crypto"), "Crypto", int(top_n))
+        render_results_tab(results_to_df(combined, "Crypto"), "Crypto", int(top_n), watchlist)
 else:
     st.info("👈 Configure parameters in the sidebar and click **Run Scan**.")
 
